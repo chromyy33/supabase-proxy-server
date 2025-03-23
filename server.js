@@ -1,20 +1,64 @@
-// Helper function to generate a unique device ID
-function generateDeviceId() {
-  const timestamp = Date.now().toString(36);
-  const random = Math.random().toString(36).substring(2, 15);
-  return timestamp + random;
+import express from "express";
+import cors from "cors";
+import { createClient } from "@supabase/supabase-js";
+import dotenv from "dotenv";
+import { fileURLToPath } from "url";
+import { dirname } from "path";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+dotenv.config();
+
+// Initialize Supabase client
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_ANON_KEY;
+
+if (!supabaseUrl || !supabaseUrl.startsWith("https://")) {
+  console.error("Invalid Supabase URL. Must start with https://");
+  process.exit(1);
 }
 
-// New API endpoints
-app.post("/api/check-activation", async (req, res) => {
+if (!supabaseKey) {
+  console.error("Missing Supabase anon key");
+  process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Enable CORS for all routes
+app.use(cors());
+
+// Parse JSON bodies
+app.use(express.json());
+
+// Middleware to log all requests
+app.use((req, res, next) => {
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  if (req.body) {
+    console.log("Request Body:", req.body);
+  }
+  next();
+});
+
+// Helper function to clean code format
+function cleanCode(code) {
+  return code.replace(/-/g, "").toUpperCase();
+}
+
+// Database endpoints
+app.get("/rest/v1/Database", async (req, res) => {
   try {
-    const { code } = req.body;
+    const { code } = req.query;
     if (!code) {
-      return res.status(400).json({ valid: false, error: "Code is required" });
+      return res.status(400).json({ error: "Code is required" });
     }
 
     const cleanCode = code.replace(/-/g, "").toUpperCase();
-    const { deviceId } = req.body;
+    console.log("Querying Supabase for code:", cleanCode);
 
     // Query for code
     const { data, error } = await supabase
@@ -24,234 +68,77 @@ app.post("/api/check-activation", async (req, res) => {
       .single();
 
     if (error) {
-      console.error("Supabase error:", error);
-      return res.status(500).json({ valid: false, error: "Database error" });
+      console.error("Supabase error details:", error);
+      throw error;
     }
 
     if (!data) {
-      return res
-        .status(404)
-        .json({ valid: false, error: "Invalid activation code" });
+      return res.status(404).json({ error: "Invalid activation code" });
     }
 
-    // Check if code is already used on another device
-    if (data.deviceId && data.deviceId !== deviceId) {
-      return res.status(400).json({
-        valid: false,
-        error: "This code is already activated on another device",
-      });
-    }
+    // Log the data we received
+    console.log("Received data from database:", data);
 
-    // Check expiry date
-    const serverDateStr = data.activeTill;
-    const currentDate = new Date();
-    const currentDateStr = currentDate.toLocaleDateString("en-CA");
-
-    if (currentDateStr > serverDateStr) {
-      // Update isActive to false
-      await supabase
-        .from("Database")
-        .update({ isActive: false })
-        .eq("code", cleanCode);
-
-      return res.status(400).json({
-        valid: false,
-        error: "Your subscription has expired",
-      });
-    }
-
-    // If no device ID is set, generate and set one
-    if (!data.deviceId) {
-      const newDeviceId = generateDeviceId();
-      const { error: updateError } = await supabase
-        .from("Database")
-        .update({ deviceId: newDeviceId })
-        .eq("code", cleanCode);
-
-      if (updateError) {
-        return res.status(500).json({
-          valid: false,
-          error: "Failed to activate code",
-        });
-      }
-
-      return res.json({
-        valid: true,
-        data: {
-          code: cleanCode,
-          deviceId: newDeviceId,
-          name: data.name,
-          email: data.email,
-          activeTill: data.activeTill,
-          isActive: data.isActive,
-        },
-      });
-    }
-
-    // Return success with existing data
-    return res.json({
-      valid: true,
-      data: {
-        code: cleanCode,
-        deviceId: data.deviceId,
-        name: data.name,
-        email: data.email,
-        activeTill: data.activeTill,
-        isActive: data.isActive,
-      },
-    });
-  } catch (error) {
-    console.error("Check activation error:", error);
-    return res.status(500).json({
-      valid: false,
-      error: "Failed to check activation code",
-    });
-  }
-});
-
-app.post("/api/check-status", async (req, res) => {
-  try {
-    const { code, deviceId } = req.body;
-    if (!code || !deviceId) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Code and deviceId are required" });
-    }
-
-    const cleanCode = code.replace(/-/g, "").toUpperCase();
-
-    // Query the database
-    const { data, error } = await supabase
-      .from("Database")
-      .select("*")
-      .eq("code", cleanCode)
-      .single();
-
-    if (error || !data) {
-      return res.json({ success: false, isLoggedIn: false });
-    }
-
-    // Check if device ID matches
-    if (data.deviceId !== deviceId) {
-      return res.json({ success: false, isLoggedIn: false });
-    }
-
-    // Check expiry date
-    const serverDateStr = data.activeTill;
-    const currentDate = new Date();
-    const currentDateStr = currentDate.toLocaleDateString("en-CA");
-
-    if (currentDateStr > serverDateStr || !data.isActive) {
-      // Update isActive to false
-      await supabase
-        .from("Database")
-        .update({ isActive: false })
-        .eq("code", cleanCode);
-
-      return res.json({
-        success: false,
-        isLoggedIn: false,
-        data: {
-          isActive: false,
-        },
-      });
-    }
-
-    return res.json({
+    // Return success response
+    res.json({
       success: true,
-      isLoggedIn: true,
-      data: {
-        isActive: data.isActive,
-        name: data.name,
-        email: data.email,
-        activeTill: data.activeTill,
-      },
+      data: data,
     });
   } catch (error) {
-    console.error("Check status error:", error);
-    return res.status(500).json({ success: false, isLoggedIn: false });
+    console.error("Database query error:", error);
+    res.status(500).json({
+      error: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
   }
-});
-
-app.post("/api/deactivate", async (req, res) => {
-  try {
-    const { code } = req.body;
-    if (!code) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Code is required" });
-    }
-
-    const cleanCode = code.replace(/-/g, "").toUpperCase();
-
-    // Update database
-    const { data, error } = await supabase
-      .from("Database")
-      .update({ deviceId: null, isActive: false })
-      .eq("code", cleanCode)
-      .select()
-      .single();
-
-    if (error) {
-      return res
-        .status(500)
-        .json({ success: false, error: "Failed to deactivate code" });
-    }
-
-    return res.json({ success: true, data });
-  } catch (error) {
-    console.error("Deactivate error:", error);
-    return res
-      .status(500)
-      .json({ success: false, error: "Failed to deactivate code" });
-  }
-});
-
-app.post("/api/update-expiry", async (req, res) => {
-  try {
-    const { code, expiryDate } = req.body;
-    if (!code || !expiryDate) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Code and expiryDate are required" });
-    }
-
-    const cleanCode = code.replace(/-/g, "").toUpperCase();
-
-    // Update database
-    const { data, error } = await supabase
-      .from("Database")
-      .update({ activeTill: expiryDate })
-      .eq("code", cleanCode)
-      .select()
-      .single();
-
-    if (error) {
-      return res
-        .status(500)
-        .json({ success: false, error: "Failed to update expiry date" });
-    }
-
-    return res.json({ success: true, data });
-  } catch (error) {
-    console.error("Update expiry error:", error);
-    return res
-      .status(500)
-      .json({ success: false, error: "Failed to update expiry date" });
-  }
-});
-
-// Remove the old endpoints since we're now using the new API endpoints
-app.get("/rest/v1/Database", async (req, res) => {
-  res.status(410).json({
-    error: "This endpoint is deprecated. Please use the new API endpoints.",
-  });
 });
 
 app.patch("/rest/v1/Database", async (req, res) => {
-  res.status(410).json({
-    error: "This endpoint is deprecated. Please use the new API endpoints.",
-  });
+  try {
+    const { code } = req.query;
+    if (!code) {
+      return res.status(400).json({ error: "Code is required" });
+    }
+
+    const cleanCode = code.replace(/-/g, "").toUpperCase();
+    console.log("Updating Supabase for code:", cleanCode);
+    console.log("Update data:", req.body);
+
+    // Update the database
+    const { data, error } = await supabase
+      .from("Database")
+      .update(req.body)
+      .eq("code", cleanCode)
+      .select()
+      .single();
+
+    if (error) {
+      console.error("Supabase error details:", error);
+      throw error;
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: "Code not found" });
+    }
+
+    // Return success response
+    res.json({
+      success: true,
+      data: data,
+    });
+  } catch (error) {
+    console.error("Database update error:", error);
+    res.status(500).json({
+      error: error.message,
+      details: error.details,
+      hint: error.hint,
+    });
+  }
 });
 
-// ... existing server.listen code ...
+// Start server
+app.listen(PORT, () => {
+  console.log(`Proxy server running on http://localhost:${PORT}`);
+  console.log("Handling Supabase requests directly");
+});
